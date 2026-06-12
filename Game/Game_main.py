@@ -8,6 +8,7 @@ import pygame
 import sys
 import json
 import os
+import subprocess  # เพิ่มมาเพื่อใช้รันไฟล์สคริปต์ Python หน้าอื่น
 from datetime import datetime
 
 # ==========================================
@@ -15,15 +16,13 @@ from datetime import datetime
 # ==========================================
 mp_pose = mp.solutions.pose
 
-# รับชื่อผู้เล่นที่ส่งมาจากหน้า Home (ผ่าน command-line argument)
 PLAYER_NAME = sys.argv[1] if len(sys.argv) > 1 else "Player"
-
-# ไฟล์เก็บคะแนน (หน้า Score จะมาอ่านไฟล์นี้)
 SCORE_FILE = r'C:\Users\pprit\Desktop\Internship June 2026\Game\scores.json'
+SCORE_SCRIPT_FILE = r'C:\Users\pprit\Desktop\Internship June 2026\Game\Game_score.py'  # พาธสคริปต์หน้า Score
 
 
 def save_score(name, score):
-    """บันทึกคะแนนของผู้เล่นลงไฟล์ JSON (เก็บเป็น list ต่อท้ายเรื่อยๆ)"""
+    """บันทึกคะแนนของผู้เล่นลงไฟล์ JSON"""
     scores = []
     if os.path.exists(SCORE_FILE):
         try:
@@ -42,8 +41,18 @@ def save_score(name, score):
         json.dump(scores, f, ensure_ascii=False, indent=2)
 
 
+# ฟังก์ชันเปิดไฟล์สคริปต์ด้วย Subprocess แบบเดียวกับหน้า Home
+def open_file(path, args=None):
+    cmd = [sys.executable, path]
+    if args:
+        cmd += args
+    subprocess.Popen(cmd)
+    pygame.quit()
+    sys.exit()
+
+
 # ==========================================
-# Function: Draw Stick Figure (on a pygame Surface)
+# Function: Draw Stick Figure
 # ==========================================
 def draw_stick_figure(surface, landmarks, w, h):
     def to_pixel(lm):
@@ -62,19 +71,19 @@ def draw_stick_figure(surface, landmarks, w, h):
     left_ankle     = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE]
     right_ankle    = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE]
 
-    color, thickness = (255, 100, 0), 24
+    color, thickness = (255, 100, 0), 16
 
     shoulder_width = abs(left_shoulder.x - right_shoulder.x) * w
     head_radius    = max(1, int(shoulder_width * 0.4))
 
     neck_x = (left_shoulder.x + right_shoulder.x) / 2
     neck_y = (left_shoulder.y + right_shoulder.y) / 2
-    hip_cx = (left_hip.x + right_hip.x) / 2
-    hip_cy = (left_hip.y + right_hip.y) / 2
 
     neck_pixel  = (int(neck_x * w), int(neck_y * h))
+    hip_cx = (left_hip.x + right_hip.x) / 2
+    hip_cy = (left_hip.y + right_hip.y) / 2
     hip_pixel   = (int(hip_cx * w), int(hip_cy * h))
-    head_center = (int(neck_x * w), int(neck_y * h - head_radius - thickness))
+    head_center = (int(neck_x * w), int(neck_y * h - head_radius - (thickness // 2)))
 
     pygame.draw.line(surface, color, neck_pixel, hip_pixel, thickness)
     pygame.draw.line(surface, color, neck_pixel, to_pixel(left_elbow), thickness)
@@ -91,26 +100,21 @@ def draw_stick_figure(surface, landmarks, w, h):
 # ==========================================
 # Function: Get Body Center Position
 # ==========================================
-def get_body_center(landmarks, frame_w, frame_h):
+def get_body_center_ratio(landmarks):
     left_hip  = landmarks[mp_pose.PoseLandmark.LEFT_HIP]
     right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP]
-    center_x  = (left_hip.x + right_hip.x) / 2
-    center_y  = (left_hip.y + right_hip.y) / 2
-    return int(center_x * frame_w), int(center_y * frame_h)
+    return (left_hip.x + right_hip.x) / 2
 
 
 # ==========================================
-# Function: Draw Lane System (on a pygame Surface)
+# Function: Draw Lane System
 # ==========================================
 def draw_lane_system(surface, width, height, hit_line, dead_line):
     lane_width = width // 4
-
     for i in range(1, 4):
         x = i * lane_width
         pygame.draw.line(surface, (232, 232, 232), (x, 0), (x, height), 2)
-
     pygame.draw.line(surface, (169, 169, 169), (0, hit_line), (width, hit_line), 2)
-
     return lane_width
 
 
@@ -138,10 +142,8 @@ class Notes:
         if self.active:
             color = (28, 28, 28)
             alpha = 80 if self.hit else 255
-
             note_surface = pygame.Surface((self.lane_width, self.lane_width), pygame.SRCALPHA)
             note_surface.fill((color[0], color[1], color[2], alpha))
-
             surface.blit(note_surface, (self.x, int(self.y)))
 
 
@@ -153,25 +155,23 @@ class Player:
         self.x          = self.lane_width // 2
         self.size       = 20
 
-        # --- เพิ่ม: smoothing + hysteresis ---
-        self.smoothed_cx        = None
-        self.smooth_alpha       = 0.25   # 0-1, ยิ่งน้อยยิ่งนิ่งแต่หน่วงมากขึ้น
+        self.smoothed_ratio     = None
+        self.smooth_alpha       = 0.18
         self.pending_lane       = 0
         self.pending_count      = 0
-        self.lane_switch_frames = 4      # ต้องอยู่ lane ใหม่ติดกันกี่เฟรมก่อนเปลี่ยนจริง
+        self.lane_switch_frames = 3
 
-    def update_from_pose(self, cx, game_width):
-        # --- Exponential smoothing ลดอาการสั่นของตำแหน่งตัว ---
-        if self.smoothed_cx is None:
-            self.smoothed_cx = cx
+    def update_from_pose(self, center_x_ratio, game_width):
+        center_x_ratio = max(0.0, min(1.0, center_x_ratio))
+        if self.smoothed_ratio is None:
+            self.smoothed_ratio = center_x_ratio
         else:
-            self.smoothed_cx = (self.smooth_alpha * cx
-                                 + (1 - self.smooth_alpha) * self.smoothed_cx)
+            self.smoothed_ratio = (self.smooth_alpha * center_x_ratio 
+                                   + (1 - self.smooth_alpha) * self.smoothed_ratio)
 
-        raw_lane = int(self.smoothed_cx // self.lane_width)
+        raw_lane = int(self.smoothed_ratio * 4)
         raw_lane = max(0, min(3, raw_lane))
 
-        # --- Hysteresis: เปลี่ยน lane เมื่ออยู่ lane ใหม่ติดต่อกันถึงเกณฑ์ ---
         if raw_lane == self.pending_lane:
             self.pending_count += 1
         else:
@@ -203,7 +203,6 @@ class Score:
     def draw(self, surface, player_name):
         name_text = self.font_name.render(f"Player: {player_name}", True, (255, 255, 255))
         surface.blit(name_text, (20, 10))
-
         score_text = self.font.render(f"Score: {self.value}", True, (255, 255, 255))
         surface.blit(score_text, (20, 10 + name_text.get_height() + 5))
 
@@ -224,34 +223,38 @@ class Game:
         self.notes  = []
 
         self.player_name = player_name
-        self.score_saved = False   # ป้องกันบันทึกซ้ำหลาย frame
-
-        self.last_time      = time.time()
-        self.spawn_timer    = 0.0
-        self.next_spawn_gap = 1.0
+        self.score_saved = False
 
         self.font_big   = font_big
         self.font_med   = font_med
         self.font_small = font_small
 
+        self.is_counting_down = True
+        self.countdown_time   = 3.9  
+        self.has_seen_player  = False 
+
+        self.last_time      = time.time()
+        self.spawn_timer    = 0.0
+        self.next_spawn_gap = 1.0
         self.game_time         = 0.0
         self.speed_per_second  = 5.0
         self.max_speed_bonus   = 300.0
 
     def reset(self):
-        """รีเซ็ตสถานะเกมทั้งหมดเพื่อเริ่มเล่นใหม่"""
         self.game_over   = False
         self.score.value = 0
         self.notes        = []
         self.score_saved  = False
-
         self.player.lane = 0
         self.player.x    = self.player.lane_width // 2
+
+        self.is_counting_down = True
+        self.countdown_time   = 3.9
+        self.has_seen_player  = False
 
         self.last_time      = time.time()
         self.spawn_timer    = 0.0
         self.next_spawn_gap = 1.0
-
         self.game_time = 0.0
 
     def get_delta_time(self):
@@ -277,8 +280,14 @@ class Game:
         if self.game_over:
             return
 
-        self.game_time += dt
+        if self.is_counting_down:
+            if self.has_seen_player:
+                self.countdown_time -= dt
+                if self.countdown_time <= 1.0: 
+                    self.is_counting_down = False
+            return
 
+        self.game_time += dt
         self.spawn_timer += dt
         if self.spawn_timer >= self.next_spawn_gap:
             self.spawn_note()
@@ -289,30 +298,25 @@ class Game:
             note.move(dt, speed_bonus=min(self.game_time * self.speed_per_second, self.max_speed_bonus))
 
         player_lane = self.player.get_lane()
-
         for note in self.notes:
             if not note.active:
                 continue
-
             if not note.scored and note.lane == player_lane:
                 if note.y + note.lane_width >= self.hit_line:
                     note.scored = True
                     note.hit    = True
                     self.score.add_points(1)
-
             if not note.scored and note.y + note.lane_width >= self.dead_line:
                 self.game_over = True
 
         self.notes = [n for n in self.notes if n.active]
 
-        # --- บันทึกคะแนนทันทีที่เกม Over (บันทึกครั้งเดียว) ---
         if self.game_over and not self.score_saved:
             save_score(self.player_name, self.score.value)
             self.score_saved = True
 
     def render(self, surface, background):
         surface.blit(background, (0, 0))
-
         draw_lane_system(surface, self.width, self.height, self.hit_line, self.dead_line)
 
         for note in self.notes:
@@ -321,22 +325,33 @@ class Game:
         self.player.draw(surface)
         self.score.draw(surface, self.player_name)
 
+        if self.is_counting_down and not self.game_over:
+            overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 160)) 
+            surface.blit(overlay, (0, 0))
+
+            if not self.has_seen_player:
+                text_warn = self.font_med.render("Waiting for player appearance...", True, (255, 255, 0))
+                surface.blit(text_warn, (self.width // 2 - text_warn.get_width() // 2, self.height // 2 - 20))
+            else:
+                display_num = int(self.countdown_time)
+                text_count = self.font_big.render(str(display_num), True, (0, 255, 255))
+                surface.blit(text_count, (self.width // 2 - text_count.get_width() // 2, self.height // 2 - 50))
+                
+                text_ready = self.font_med.render("GET READY!", True, (255, 255, 255))
+                surface.blit(text_ready, (self.width // 2 - text_ready.get_width() // 2, self.height // 2 + 30))
+
         if self.game_over:
             overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 128))
             surface.blit(overlay, (0, 0))
 
             text1 = self.font_big.render("GAME OVER", True, (255, 0, 0))
-            surface.blit(text1, (self.width // 2 - text1.get_width() // 2,
-                                  self.height // 2 - 60))
-
+            surface.blit(text1, (self.width // 2 - text1.get_width() // 2, self.height // 2 - 60))
             text2 = self.font_med.render(f"Final Score: {self.score.value}", True, (255, 255, 255))
-            surface.blit(text2, (self.width // 2 - text2.get_width() // 2,
-                                  self.height // 2 + 10))
-
-            text3 = self.font_small.render("Press Q to quit or R to restart", True, (200, 200, 200))
-            surface.blit(text3, (self.width // 2 - text3.get_width() // 2,
-                                  self.height // 2 + 60))
+            surface.blit(text2, (self.width // 2 - text2.get_width() // 2, self.height // 2 + 10))
+            text3 = self.font_small.render("Press Q to open score screen or R to restart", True, (200, 200, 200))
+            surface.blit(text3, (self.width // 2 - text3.get_width() // 2, self.height // 2 + 60))
 
 
 # ==========================================
@@ -346,8 +361,8 @@ if __name__ == "__main__":
     pygame.init()
 
     font_score = pygame.font.SysFont(None, 36)
-    font_big   = pygame.font.SysFont(None, 72)
-    font_med   = pygame.font.SysFont(None, 36)
+    font_big   = pygame.font.SysFont(None, 120) 
+    font_med   = pygame.font.SysFont(None, 42)
     font_small = pygame.font.SysFont(None, 28)
     font_name  = pygame.font.SysFont(None, 30)
 
@@ -362,19 +377,17 @@ if __name__ == "__main__":
     background     = pygame.transform.scale(background_src, (game.width, game.height))
 
     cap = cv.VideoCapture(0)
-
-    # --- ตั้งค่ากล้องให้คงที่ ลด lag/กระตุก ---
     cap.set(cv.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv.CAP_PROP_FPS, 30)
+    cap.set(cv.CAP_PROP_FPS, 60)
 
     PIP_W, PIP_H = 240, 180
 
     with mp_pose.Pose(
         min_detection_confidence=0.6,
         min_tracking_confidence=0.6,
-        model_complexity=1,        # 0=เร็วแต่หยาบ, 1=กลาง (แนะนำ), 2=แม่นแต่หนัก
-        smooth_landmarks=True       # MediaPipe จะ smooth landmark ภายในให้เอง
+        model_complexity=1,
+        smooth_landmarks=True
     ) as pose:
         while game.running:
             dt = game.get_delta_time()
@@ -384,7 +397,12 @@ if __name__ == "__main__":
                     game.running = False
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_q:
-                        game.running = False
+                        # --- ปรับวิธีตามที่คุณต้องการตรงนี้เลยครับ ---
+                        if game.game_over:
+                            cap.release()  # คืนสิทธิ์การใช้กล้องเว็บแคมก่อนเปลี่ยนหน้าต่าง
+                            open_file(SCORE_SCRIPT_FILE)  # รันไฟล์สคริปต์หน้าจอคะแนน (Game_score.py) ด้วย Subprocess
+                        else:
+                            game.running = False   # หากกด Q ขณะเล่นปกติ ให้ปิดเกมลง
                     elif event.key == pygame.K_r:
                         if game.game_over:
                             game.reset()
@@ -402,15 +420,25 @@ if __name__ == "__main__":
             stick_surface = pygame.Surface((w, h))
             stick_surface.fill((255, 255, 255))
 
-            if results.pose_landmarks:
-                landmarks = results.pose_landmarks.landmark
-                draw_stick_figure(stick_surface, landmarks, w, h)
-                cx, cy = get_body_center(landmarks, game.width, game.height)
-                game.player.update_from_pose(cx, game.width)
-
             scaled_hit  = int(game.hit_line * h / game.height)
             scaled_dead = int(game.dead_line * h / game.height)
             draw_lane_system(stick_surface, w, h, scaled_hit, scaled_dead)
+
+            if results.pose_landmarks:
+                game.has_seen_player = True 
+                
+                landmarks = results.pose_landmarks.landmark
+                draw_stick_figure(stick_surface, landmarks, w, h)
+                
+                cx_ratio = get_body_center_ratio(landmarks)
+                game.player.update_from_pose(cx_ratio, game.width)
+
+                sim_x = game.player.lane * (w // 4) + (w // 8)
+                sim_y = scaled_hit
+                pygame.draw.circle(stick_surface, (0, 255, 0), (sim_x, sim_y), 10)
+            else:
+                if game.is_counting_down:
+                    game.has_seen_player = False
 
             game.update(dt)
             game.render(screen, background)
