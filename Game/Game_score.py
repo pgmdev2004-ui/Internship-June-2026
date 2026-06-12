@@ -1,0 +1,264 @@
+import pygame
+import pyautogui
+import sys
+import json
+import os
+import subprocess
+
+pygame.init()
+
+screen_width, screen_height = pyautogui.size()
+screen_width = screen_width - screen_width // 3
+screen = pygame.display.set_mode((screen_width, screen_height))
+pygame.display.set_caption("Score Board")
+clock = pygame.time.Clock()
+
+# ==========================================
+# Path settings
+# ==========================================
+SCORE_FILE = r'C:\Users\pprit\Desktop\Internship June 2026\Game\scores.json'
+HOME_FILE  = r'C:\Users\pprit\Desktop\Internship June 2026\Game\Game_home.py'
+BG_PATH    = r'C:\Users\pprit\Desktop\Internship June 2026\image\Background\BG1.png'
+
+bg_screen = pygame.image.load(BG_PATH)
+bg_screen = pygame.transform.scale(bg_screen, (screen_width, screen_height))
+
+
+# ==========================================
+# Load / Save / Clear Scores
+# ==========================================
+def load_scores():
+    if not os.path.exists(SCORE_FILE):
+        return []
+    try:
+        with open(SCORE_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    data.sort(key=lambda item: item.get("score", 0), reverse=True)
+    return data
+
+
+def clear_scores():
+    with open(SCORE_FILE, 'w', encoding='utf-8') as f:
+        json.dump([], f, ensure_ascii=False, indent=2)
+
+
+all_scores = load_scores()
+top10      = all_scores[:10]
+rest       = all_scores[10:]
+
+
+# ==========================================
+# Fonts
+# ==========================================
+font_title  = pygame.font.SysFont(None, 64)
+font_header = pygame.font.SysFont(None, 36)
+font_row    = pygame.font.SysFont(None, 32)
+font_hint   = pygame.font.SysFont(None, 26)
+font_button = pygame.font.SysFont(None, 30)
+
+
+# ==========================================
+# Layout (จัดให้อยู่กึ่งกลางจอ ทั้งแนวนอน-แนวตั้ง)
+# ==========================================
+BOARD_W = 700
+BOARD_X = screen_width // 2 - BOARD_W // 2
+
+ROW_HEIGHT    = 42
+TOP10_HEIGHT  = ROW_HEIGHT * 10
+SCROLL_HEIGHT = 200
+
+GAP_TITLE_TO_BOARD    = 20
+GAP_BOARD_TO_REST     = 30
+GAP_RESTTITLE_TO_LIST = 10
+GAP_LIST_TO_BUTTON    = 20
+GAP_BUTTON_TO_HINT    = 10
+
+TITLE_HEIGHT     = 64
+RESTTITLE_HEIGHT = 36
+BUTTON_HEIGHT    = 50
+HINT_HEIGHT      = 26
+
+TOTAL_HEIGHT = (
+    TITLE_HEIGHT + GAP_TITLE_TO_BOARD +
+    (TOP10_HEIGHT + 20) + GAP_BOARD_TO_REST +
+    RESTTITLE_HEIGHT + GAP_RESTTITLE_TO_LIST +
+    SCROLL_HEIGHT + GAP_LIST_TO_BUTTON +
+    BUTTON_HEIGHT + GAP_BUTTON_TO_HINT +
+    HINT_HEIGHT
+)
+
+VERTICAL_OFFSET = 0  # ปรับค่านี้เพื่อขยับทั้งบอร์ดขึ้น(-)/ลง(+)
+
+start_y = max(10, (screen_height - TOTAL_HEIGHT) // 2) + VERTICAL_OFFSET
+
+TITLE_Y       = start_y
+TOP10_TOP     = TITLE_Y + TITLE_HEIGHT + GAP_TITLE_TO_BOARD
+REST_TITLE_Y  = TOP10_TOP + TOP10_HEIGHT + 20 + GAP_BOARD_TO_REST
+SCROLL_TOP    = REST_TITLE_Y + RESTTITLE_HEIGHT + GAP_RESTTITLE_TO_LIST
+SCROLL_BOTTOM = SCROLL_TOP + SCROLL_HEIGHT
+BUTTON_Y      = SCROLL_BOTTOM + GAP_LIST_TO_BUTTON
+HINT_Y        = BUTTON_Y + BUTTON_HEIGHT + GAP_BUTTON_TO_HINT
+
+# ปุ่ม Clear Scores (กึ่งกลางจอ)
+clear_button_rect = pygame.Rect(0, BUTTON_Y, 200, BUTTON_HEIGHT)
+clear_button_rect.centerx = screen_width // 2
+
+scroll_offset  = 0
+SCROLL_SPEED   = 30
+confirm_delete = False
+# ==========================================
+# Drawing helpers
+# ==========================================
+def draw_row(surface, rank, item, y, highlight=False):
+    name  = item.get("name", "Unknown")
+    score = item.get("score", 0)
+
+    bg_color = (255, 215, 0, 60) if (rank <= 3 and not highlight) else (255, 255, 255, 30)
+
+    row_surface = pygame.Surface((BOARD_W, ROW_HEIGHT - 4), pygame.SRCALPHA)
+    row_surface.fill(bg_color)
+    surface.blit(row_surface, (BOARD_X, y))
+
+    rank_color = (255, 215, 0) if rank == 1 else \
+                 (192, 192, 192) if rank == 2 else \
+                 (205, 127, 50) if rank == 3 else \
+                 (255, 255, 255)
+
+    rank_text  = font_row.render(f"#{rank}", True, rank_color)
+    name_text  = font_row.render(name, True, (255, 255, 255))
+    score_text = font_row.render(str(score), True, (255, 255, 255))
+
+    surface.blit(rank_text,  (BOARD_X + 15, y + 4))
+    surface.blit(name_text,  (BOARD_X + 100, y + 4))
+    surface.blit(score_text, (BOARD_X + BOARD_W - score_text.get_width() - 20, y + 4))
+
+
+def get_max_scroll():
+    content_height = len(rest) * ROW_HEIGHT
+    return max(0, content_height - SCROLL_HEIGHT)
+
+
+def draw_score_screen(surface):
+    surface.blit(bg_screen, (0, 0))
+
+    # --- Title ---
+    title_text = font_title.render("LEADERBOARD", True, (255, 255, 255))
+    surface.blit(title_text, (screen_width // 2 - title_text.get_width() // 2, TITLE_Y))
+
+    # --- Top 10 Board ---
+    board_rect = pygame.Rect(BOARD_X - 10, TOP10_TOP - 10, BOARD_W + 20, TOP10_HEIGHT + 20)
+    board_surface = pygame.Surface((board_rect.width, board_rect.height), pygame.SRCALPHA)
+    board_surface.fill((0, 0, 0, 120))
+    surface.blit(board_surface, (board_rect.x, board_rect.y))
+    pygame.draw.rect(surface, (255, 255, 255), board_rect, 2, border_radius=8)
+
+    if len(top10) == 0:
+        empty_text = font_header.render("No scores yet", True, (200, 200, 200))
+        surface.blit(empty_text, (screen_width // 2 - empty_text.get_width() // 2, TOP10_TOP + 20))
+    else:
+        for i, item in enumerate(top10):
+            y = TOP10_TOP + i * ROW_HEIGHT
+            draw_row(surface, i + 1, item, y)
+
+    # --- Rest of the ranks (scrollable) ---
+    if len(rest) > 0:
+        rest_title = font_header.render("Other Ranks (scroll with mouse wheel)", True, (220, 220, 220))
+        surface.blit(rest_title, (BOARD_X, REST_TITLE_Y))
+
+        clip_rect = pygame.Rect(BOARD_X - 10, SCROLL_TOP, BOARD_W + 20, SCROLL_HEIGHT)
+        surface.set_clip(clip_rect)
+
+        for i, item in enumerate(rest):
+            rank = i + 11
+            y = SCROLL_TOP + i * ROW_HEIGHT - scroll_offset
+
+            if y + ROW_HEIGHT < SCROLL_TOP or y > SCROLL_BOTTOM:
+                continue
+
+            draw_row(surface, rank, item, y, highlight=True)
+
+        surface.set_clip(None)
+        pygame.draw.rect(surface, (255, 255, 255), clip_rect, 2, border_radius=8)
+
+    # --- Clear Scores Button ---
+    pygame.draw.rect(surface, (180, 40, 40), clear_button_rect, border_radius=8)
+    pygame.draw.rect(surface, (255, 255, 255), clear_button_rect, 2, border_radius=8)
+    clear_text = font_button.render("Clear Scores", True, (255, 255, 255))
+    surface.blit(clear_text, (clear_button_rect.centerx - clear_text.get_width() // 2,
+                               clear_button_rect.centery - clear_text.get_height() // 2))
+
+    # --- Hint ---
+    hint_text = font_hint.render("Press ESC to go back to Home", True, (130, 130, 130))
+    surface.blit(hint_text, (screen_width // 2 - hint_text.get_width() // 2, HINT_Y))
+
+
+def draw_confirm_dialog(surface):
+    overlay = pygame.Surface((screen_width, screen_height), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 160))
+    surface.blit(overlay, (0, 0))
+
+    box_w, box_h = 460, 180
+    box_rect = pygame.Rect(0, 0, box_w, box_h)
+    box_rect.center = (screen_width // 2, screen_height // 2)
+
+    pygame.draw.rect(surface, (40, 40, 40), box_rect, border_radius=10)
+    pygame.draw.rect(surface, (255, 255, 255), box_rect, 2, border_radius=10)
+
+    msg1 = font_header.render("Clear all scores?", True, (255, 255, 255))
+    msg2 = font_hint.render("Press Y to confirm  /  N or ESC to cancel", True, (220, 220, 220))
+
+    surface.blit(msg1, (box_rect.centerx - msg1.get_width() // 2, box_rect.y + 35))
+    surface.blit(msg2, (box_rect.centerx - msg2.get_width() // 2, box_rect.y + 100))
+
+
+def go_home():
+    subprocess.Popen([sys.executable, HOME_FILE])
+    pygame.quit()
+    sys.exit()
+
+
+# ==========================================
+# Main Loop
+# ==========================================
+running = True
+while running:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
+
+        elif event.type == pygame.KEYDOWN:
+            if confirm_delete:
+                if event.key == pygame.K_y:
+                    clear_scores()
+                    all_scores = []
+                    top10      = []
+                    rest       = []
+                    scroll_offset = 0
+                    confirm_delete = False
+                elif event.key in (pygame.K_n, pygame.K_ESCAPE):
+                    confirm_delete = False
+            else:
+                if event.key == pygame.K_ESCAPE:
+                    go_home()
+
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if not confirm_delete:
+                if clear_button_rect.collidepoint(event.pos):
+                    confirm_delete = True
+
+        elif event.type == pygame.MOUSEWHEEL:
+            if not confirm_delete:
+                scroll_offset -= event.y * SCROLL_SPEED
+                scroll_offset = max(0, min(scroll_offset, get_max_scroll()))
+
+    draw_score_screen(screen)
+
+    if confirm_delete:
+        draw_confirm_dialog(screen)
+
+    pygame.display.flip()
+    clock.tick(60)
