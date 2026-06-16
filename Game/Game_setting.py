@@ -1,3 +1,4 @@
+"""
 import pygame
 import pyautogui
 import sys
@@ -10,7 +11,7 @@ screen = pygame.display.set_mode((screen_width, screen_height))
 pygame.display.set_caption("Home")
 clock = pygame.time.Clock()
 
-bg_screen = pygame.image.load(r'C:\Users\pprit\Desktop\Internship June 2026\image\BG1.png')
+bg_screen = pygame.image.load(r'C:\Users\pprit\Desktop\Internship June 2026\image\Background\BG1.png')
 bg_screen = pygame.transform.scale(bg_screen, (screen_width, screen_height))
 
 
@@ -49,7 +50,7 @@ def button_home():
 
 
 def compute_button_rects(other_images):
-    """คำนวณตำแหน่ง rect ของแต่ละปุ่ม (ไม่วาด) ใช้สำหรับเช็คคลิกและวาดให้ตรงกัน"""
+    #คำนวณตำแหน่ง rect ของแต่ละปุ่ม (ไม่วาด) ใช้สำหรับเช็คคลิกและวาดให้ตรงกัน
     lane_height = screen_height // 3
     x_center = screen_width // 2
 
@@ -100,7 +101,7 @@ exit_rect    = button_rects[3]
 
 
 def open_file(path):
-    """เปิดไฟล์ python อื่นด้วย subprocess แล้วปิดหน้าต่าง Home ปัจจุบัน"""
+    #เปิดไฟล์ python อื่นด้วย subprocess แล้วปิดหน้าต่าง Home ปัจจุบัน
     subprocess.Popen([sys.executable, path])
     pygame.quit()
     sys.exit()
@@ -132,3 +133,4 @@ while running:
 
     pygame.display.flip()
     clock.tick(60)
+"""
